@@ -1,0 +1,17 @@
+# Virtual Environment
+venv/
+ENV/
+env/
+
+# Python Cache
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Local Data and Artifacts
+data/*.csv
+artifacts/models/
+
+# Environment Variables
+.env
