@@ -1,106 +1,160 @@
 import joblib
-import numpy as np
 import pandas as pd
-from fastapi import FastAPI, HTTPException
-from pydantic import BaseModel, Field
+from typing import List
+from fastapi import FastAPI, HTTPException, Depends, status
+from fastapi.middleware.cors import CORSMiddleware
+from fastapi.security import OAuth2PasswordBearer, OAuth2PasswordRequestForm
+from pydantic import BaseModel, EmailStr, Field
+from sqlalchemy.orm import Session
+from jose import jwt, JWTError
+
 from src.core.config import settings
 from src.core.logging import app_logger
+from src.database.session import get_db_context, init_db_schema
+from src.database.models import Project, PredictionRecord, User
+from src.auth.security import hash_password, verify_password, create_access_token, ALGORITHM
 
-# Define the incoming data structure for rigorous validation checks
-class ProjectMetricsInput(BaseModel):
-    delayed_tasks: int = Field(..., description="Number of delayed tasks currently active", ge=0)
-    git_commits: int = Field(..., description="Total Git commits pushed this week", ge=0)
-    open_bugs: int = Field(..., description="Total open bugs active", ge=0)
-    high_priority_bugs: int = Field(..., description="Number of critical priority bugs", ge=0)
-    sprint_velocity: float = Field(..., description="Current team sprint velocity sprint rate")
-    developer_workload: float = Field(..., description="Calculated workload stress level index index scores")
-    code_review_duration: float = Field(..., description="Average code review resolution windows in hours")
-    requirement_changes: int = Field(..., description="Total scoping target updates introduced", ge=0)
-    meeting_attendance: float = Field(..., description="Percentage of project meetings attended", ge=0.0, le=100.0)
-    ci_cd_failures: int = Field(..., description="Count of pipeline validation breaks this week", ge=0)
-    testing_coverage: float = Field(..., description="Unit code coverage percentage boundaries", ge=0.0, le=100.0)
-    pull_request_activity: int = Field(..., description="Total PR adjustments reviewed", ge=0)
-
-# Initialize production FastAPI server application instances
+# 2.2.0 Version with explicit Auth Documentation
 app = FastAPI(
-    title="AI Project Failure Intelligence Platform API",
-    description="Enterprise Machine Learning Engine providing automated project operational risk and failure predictions.",
-    version="1.0.0"
+    title="AI Project Failure Intelligence Platform API", 
+    version="2.2.0",
+    description="Enterprise Ingestion, Inference, and Secure Token Gating Engine."
 )
 
-# Global memory containers for persistent production binary states
+app.add_middleware(CORSMiddleware, allow_origins=["*"], allow_credentials=True, allow_methods=["*"], allow_headers=["*"])
+
+oauth2_scheme = OAuth2PasswordBearer(tokenUrl="/api/v1/auth/login")
+
+class UserRegistrationSchema(BaseModel):
+    email: EmailStr
+    password: str = Field(..., min_length=8, example="P@ssword123!")
+    role: str = Field(default="manager", example="manager")
+
+class TokenResponseSchema(BaseModel):
+    access_token: str
+    token_type: str
+
+class ProjectSnapshotMetrics(BaseModel):
+    delayed_tasks: int = Field(..., ge=0)
+    git_commits: int = Field(..., ge=0)
+    open_bugs: int = Field(..., ge=0)
+    high_priority_bugs: int = Field(..., ge=0)
+    sprint_velocity: float
+    developer_workload: float
+    code_review_duration: float
+    requirement_changes: int = Field(..., ge=0)
+    meeting_attendance: float
+    ci_cd_failures: int = Field(..., ge=0)
+    testing_coverage: float
+    pull_request_activity: int = Field(..., ge=0)
+
 MODELS = {}
 
 @app.on_event("startup")
-def load_production_artifacts():
-    """Asynchronously loads all serialized machine learning components into memory on server boot."""
+def bootstrap_server_components():
     try:
-        app_logger.info("Initializing artifact hydration. Loading model layers into application memory...")
-        
+        init_db_schema()
         MODELS["classifier"] = joblib.load(settings.MODEL_DIR / "champion_classifier.joblib")
         MODELS["regressor"] = joblib.load(settings.MODEL_DIR / "champion_regressor.joblib")
         MODELS["scaler"] = joblib.load(settings.MODEL_DIR / "fitted_scaler.joblib")
         MODELS["feature_columns"] = joblib.load(settings.MODEL_DIR / "feature_columns.joblib")
-        
-        app_logger.info("All core machine learning layers and scalers hydrated successfully. System online.")
+        app_logger.info("System configuration stack with Auth operational.")
     except Exception as e:
-        app_logger.error(f"Critical System Failure: Failed to load binary components: {str(e)}")
-        raise RuntimeError(f"Model hydration block failed: {str(e)}")
+        raise RuntimeError(f"System boot sequence halted: {str(e)}")
 
-@app.get("/health")
-def health_check():
-    """System heartbeat endpoint used for container orchestration and uptime probes."""
-    return {"status": "healthy", "hydrated_models": list(MODELS.keys())}
-
-@app.post("/predict")
-def predict_project_risk(metrics: ProjectMetricsInput):
-    """
-    Accepts raw operational parameters, triggers online feature engineering wrappers,
-    and returns localized dual predictions back across classification and regression.
-    """
+def get_current_active_user(token: str = Depends(oauth2_scheme), db: Session = Depends(get_db_context)) -> User:
+    credentials_exception = HTTPException(
+        status_code=status.HTTP_401_UNAUTHORIZED,
+        detail="Could not validate active secure authentication credentials.",
+        headers={"WWW-Authenticate": "Bearer"},
+    )
     try:
-        # Convert incoming telemetry dict straight into a structure dataframe frame
-        input_data = pd.DataFrame([metrics.dict()])
+        payload = jwt.decode(token, settings.SECRET_KEY, algorithms=[ALGORITHM])
+        user_email: str = payload.get("sub")
+        if user_email is None:
+            raise credentials_exception
+    except JWTError:
+        raise credentials_exception
         
-        # --- Real-Time On-The-Fly Online Feature Engineering ---
-        # Recreate the rolling baseline signals calculated in Phase 5
-        input_data["workload_3wk_avg"] = input_data["developer_workload"]
-        input_data["velocity_3wk_avg"] = input_data["sprint_velocity"]
-        input_data["delayed_tasks_lag1"] = input_data["delayed_tasks"]
-        input_data["delayed_tasks_acceleration"] = 0.0  # Zero baseline initialization for snapshot inference 
-        input_data["bugs_lag1"] = input_data["open_bugs"]
-        input_data["bug_growth_rate"] = 0.0
+    user = db.query(User).filter(User.email == user_email).first()
+    if user is None or not user.is_active:
+        raise credentials_exception
+    return user
+
+def execute_pipeline_inference(df_input: pd.DataFrame) -> List[dict]:
+    df_processed = df_input.copy()
+    df_processed["workload_3wk_avg"] = df_processed["developer_workload"]
+    df_processed["velocity_3wk_avg"] = df_processed["sprint_velocity"]
+    df_processed["delayed_tasks_acceleration"] = 0.0
+    df_processed["bug_growth_rate"] = 0.0
+    df_processed["bug_severity_ratio"] = df_processed["high_priority_bugs"] / (df_processed["open_bugs"].replace(0, 1))
+    df_processed["review_friction_index"] = df_processed["code_review_duration"] * df_processed["pull_request_activity"]
+    ordered_matrix = df_processed[MODELS["feature_columns"]]
+    scaled_matrix = MODELS["scaler"].transform(ordered_matrix)
+    cls_preds = MODELS["classifier"].predict(scaled_matrix)
+    cls_probs = MODELS["classifier"].predict_proba(scaled_matrix)
+    reg_preds = MODELS["regressor"].predict(scaled_matrix)
+    results = []
+    for idx in range(len(df_input)):
+        p_fail = int(cls_preds[idx])
+        prob = float(cls_probs[idx][1] if p_fail == 1 else cls_probs[idx][0])
+        risk_val = max(0.0, min(100.0, float(reg_preds[idx])))
+        results.append({"is_failed": bool(p_fail), "prediction_label": "High Risk" if p_fail == 1 else "Stable", "confidence_score": round(prob, 4), "project_failure_risk_pct": round(risk_val, 2)})
+    return results
+
+@app.post("/api/v1/auth/register", status_code=201)
+def register_tenant_identity(user_data: UserRegistrationSchema, db: Session = Depends(get_db_context)):
+    existing_user = db.query(User).filter(User.email == user_data.email).first()
+    if existing_user:
+        raise HTTPException(status_code=400, detail="Account with this email already exists.")
         
-        # Compute cross ratios safely
-        input_data["bug_severity_ratio"] = input_data["high_priority_bugs"] / (input_data["open_bugs"].replace(0, 1))
-        input_data["review_friction_index"] = input_data["code_review_duration"] * input_data["pull_request_activity"]
+    secured_user = User(
+        email=user_data.email,
+        hashed_password=hash_password(user_data.password),
+        role=user_data.role
+    )
+    db.add(secured_user)
+    db.commit()
+    return {"status": "success", "message": f"Identity record {user_data.email} provisioned successfully."}
+
+@app.post("/api/v1/auth/login", response_model=TokenResponseSchema)
+def authenticate_user_session(form_data: OAuth2PasswordRequestForm = Depends(), db: Session = Depends(get_db_context)):
+    user = db.query(User).filter(User.email == form_data.username).first()
+    if not user or not verify_password(form_data.password, user.hashed_password):
+        raise HTTPException(status_code=400, detail="Incorrect email username or password string parameters.")
         
-        # Enforce tracking compliance with training column layout shapes
-        ordered_features = input_data[MODELS["feature_columns"]]
+    access_token = create_access_token(data={"sub": user.email, "role": user.role})
+    return {"access_token": access_token, "token_type": "bearer"}
+
+# 🛡️ Added explicit dependency for Swagger locks visualization mapping
+@app.post("/api/v1/predict/snapshot", dependencies=[Depends(oauth2_scheme)])
+def predict_single_snapshot(
+    metrics: ProjectSnapshotMetrics, 
+    db: Session = Depends(get_db_context),
+    current_user: User = Depends(get_current_active_user)
+):
+    try:
+        project_record = db.query(Project).filter(Project.name == f"Workspace of {current_user.email}").first()
+        if not project_record:
+            project_record = Project(name=f"Workspace of {current_user.email}", description="Dynamic account analytics stream context.")
+            db.add(project_record)
+            db.commit()
+            db.refresh(project_record)
+
+        input_df = pd.DataFrame([metrics.dict()])
+        inference = execute_pipeline_inference(input_df)[0]
         
-        # Apply standard distribution normalization scaling transformations
-        scaled_features = MODELS["scaler"].transform(ordered_features)
-        
-        # Run inferences simultaneously
-        failure_prediction = int(MODELS["classifier"].predict(scaled_features)[0])
-        failure_probabilities = MODELS["classifier"].predict_proba(scaled_features)[0]
-        failure_confidence = float(failure_probabilities[1] if failure_prediction == 1 else failure_probabilities[0])
-        
-        calculated_risk_pct = float(MODELS["regressor"].predict(scaled_features)[0])
-        # Floor boundaries strictly to sensible percentage bounds
-        calculated_risk_pct = max(0.0, min(100.0, calculated_risk_pct))
-        
-        return {
-            "prediction": {
-                "is_failed": bool(failure_prediction),
-                "prediction_label": "High Risk of Failure" if failure_prediction == 1 else "Stable / Low Risk",
-                "confidence_score": round(failure_confidence, 4)
-            },
-            "risk_analysis": {
-                "project_failure_risk_pct": round(calculated_risk_pct, 2)
-            }
-        }
-        
+        persistent_ledger = PredictionRecord(
+            project_id=project_record.id, delayed_tasks=metrics.delayed_tasks, git_commits=metrics.git_commits,
+            open_bugs=metrics.open_bugs, high_priority_bugs=metrics.high_priority_bugs, sprint_velocity=metrics.sprint_velocity,
+            developer_workload=metrics.developer_workload, code_review_duration=metrics.code_review_duration,
+            requirement_changes=metrics.requirement_changes, meeting_attendance=metrics.meeting_attendance,
+            ci_cd_failures=metrics.ci_cd_failures, testing_coverage=metrics.testing_coverage, pull_request_activity=metrics.pull_request_activity,
+            is_failed=inference["is_failed"], prediction_label=inference["prediction_label"], confidence_score=inference["confidence_score"], project_failure_risk_pct=inference["project_failure_risk_pct"]
+        )
+        db.add(persistent_ledger)
+        db.commit()
+        return inference
     except Exception as e:
-        app_logger.error(f"Prediction Pipeline Interrupted Exception: {str(e)}")
-        raise HTTPException(status_code=500, detail=f"Inference Engine Processing Error: {str(e)}")
+        db.rollback()
+        raise HTTPException(status_code=500, detail=str(e))
