@@ -1,18 +1,17 @@
 import datetime
-from typing import List, Optional
+from typing import Any, List, Optional
 
 from sqlalchemy import JSON, Boolean, DateTime, Float, ForeignKey, Integer, String, Text
 from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
+
 class Base(DeclarativeBase):
-    """Abstract Base Class providing core metadata registries for migrations."""
-    pass
+    """Base class for SQLAlchemy models."""
+
 
 class Project(Base):
-    """
-    Represents an enterprise operational unit workspace tracking target telemetry.
-    Maps 1-to-Many against historical prediction scoring arrays.
-    """
+    """Workspace container that groups predictions for a team or initiative."""
+
     __tablename__ = "projects"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
@@ -22,23 +21,19 @@ class Project(Base):
         DateTime, default=datetime.datetime.utcnow, nullable=False
     )
 
-    # Relationship Linkage: Cascades deletions cleanly down to predictions
     predictions: Mapped[List["PredictionRecord"]] = relationship(
         "PredictionRecord", back_populates="project", cascade="all, delete-orphan"
     )
 
 
 class PredictionRecord(Base):
-    """
-    The core ledger recording immutable structural project health states.
-    Stores exact snapshot parameters alongside the corresponding model outputs.
-    """
+    """Historical record of a prediction result for audit and analytics."""
+
     __tablename__ = "prediction_records"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     project_id: Mapped[int] = mapped_column(Integer, ForeignKey("projects.id", ondelete="CASCADE"), nullable=False, index=True)
-    
-    # 📊 Ingested Operational Telemetry Snapshot Parameters
+
     delayed_tasks: Mapped[int] = mapped_column(Integer, nullable=False)
     git_commits: Mapped[int] = mapped_column(Integer, nullable=False)
     open_bugs: Mapped[int] = mapped_column(Integer, nullable=False)
@@ -52,32 +47,32 @@ class PredictionRecord(Base):
     testing_coverage: Mapped[float] = mapped_column(Float, nullable=False)
     pull_request_activity: Mapped[int] = mapped_column(Integer, nullable=False)
 
-    # 🔮 Machine Learning Pipeline Model Inference Layer Scores
     is_failed: Mapped[bool] = mapped_column(Boolean, nullable=False)
     prediction_label: Mapped[str] = mapped_column(String(50), nullable=False)
     confidence_score: Mapped[float] = mapped_column(Float, nullable=False)
     project_failure_risk_pct: Mapped[float] = mapped_column(Float, nullable=False)
+    explanation: Mapped[Optional[str]] = mapped_column(Text, nullable=True)
+    feature_summary: Mapped[Optional[Any]] = mapped_column(JSON, nullable=True)
+    source_type: Mapped[str] = mapped_column(String(20), default="snapshot", nullable=False)
+    source_name: Mapped[Optional[str]] = mapped_column(String(150), nullable=True)
 
-    # Operational Logs & Auditing Metadata
     evaluated_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow, nullable=False, index=True
     )
 
-    # Bidirectional Relationship Link back to the primary project workspace boundary
     project: Mapped["Project"] = relationship("Project", back_populates="predictions")
-    
+
+
 class User(Base):
-    """
-    Represents an authenticated platform entity authorized to interact with tenancy matrices.
-    Stores cryptographically salted pass-phrases alongside operational permission scopes.
-    """
+    """Authenticated platform user for basic access control."""
+
     __tablename__ = "users"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True, autoincrement=True)
     email: Mapped[str] = mapped_column(String(150), unique=True, nullable=False, index=True)
     hashed_password: Mapped[str] = mapped_column(String(255), nullable=False)
     is_active: Mapped[bool] = mapped_column(Boolean, default=True, nullable=False)
-    role: Mapped[str] = mapped_column(String(50), default="manager", nullable=False) # e.g., admin, manager, viewer
+    role: Mapped[str] = mapped_column(String(50), default="manager", nullable=False)
     created_at: Mapped[datetime.datetime] = mapped_column(
         DateTime, default=datetime.datetime.utcnow, nullable=False
     )

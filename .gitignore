@@ -15,3 +15,5 @@ artifacts/models/
 
 # Environment Variables
 .env
+*.db
+*.db-journal
